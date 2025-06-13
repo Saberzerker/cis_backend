@@ -1,35 +1,11 @@
-# Core utilities
 requests
+selenium
 beautifulsoup4
-
-# PDF parsing and text extraction
 PyMuPDF
-
-# Logging (standard in Python, but keep for completeness)
-# logging  # built-in
-
-# For the GRC Report generation
 fpdf2
 matplotlib
-
-# For CSV and Excel (optional, pandas is not strictly needed for CSV, but useful for future export)
-pandas
-openpyxl
-
-# For scheduling the auto-update checker
 APScheduler
-
-# For LLM Gemini integration (replace with official Google package as needed)
-# google-generativeai is the official Gemini client (as per current Google docs)
-google-generativeai
-
-# For browser automation (if needed for CIS login/download)
-selenium
-# Or playwright (choose one, comment the other if not using both)
-# playwright
-
-# For dotenv (manage API keys/secrets if needed)
-python-dotenv
-
-# For concurrent processing (built-in, but for completeness)
-# concurrent.futures  # built-in
+imapclient
+pyzmail36 
+requests
+dotenv
