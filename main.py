@@ -4,7 +4,7 @@ import csv
 from config import (INPUT_DIR, OUTPUT_TEXT, OUTPUT_JSON, OUTPUT_CSV, LOG_FILE, SECTION_HEADERS)
 from utils import setup_logging, log, extract_text, clean_text
 from parser import parse_text
-from validation import validate_parsed_data
+from llm_validation import validate_parsed_data
 
 def export_json(data, json_path):
     with open(json_path, 'w', encoding="utf-8") as json_file:
