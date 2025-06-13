@@ -76,3 +76,7 @@ def clean_text(text_path):
     except Exception as e:
         log(f"[ERROR] Cleaning Failed for {text_path}: {e}", "error")
         raise
+
+def ensure_directories(dirs):
+    for d in dirs:
+        os.makedirs(d, exist_ok=True)
