@@ -1,213 +1,220 @@
+#! Copilot V6
+
 import re
 
+def parse_text(text_path):
+    """
+    Robust CIS Benchmark parser:
+    - Handles multi-line headings (control number + title on separate lines)
+    - Extracts ID and Title for every control (best-effort)
+    - Always outputs Profile Applicability as a list
+    - Tolerant to section header variations (case, Statement/Procedure, etc.)
+    - Defensive for missing/optional sections and avoids blank IDs/titles
+    - Avoids false positives (references, appendix, etc.)
+    """
+    # State flags for section fields
+    flagStart = False
+    flagName = flagLevel = flagDesc = flagRation = flagImpact = False
+    flagAudit = flagRemed = flagDefval = flagRefs = flagControl = flagMetre = False
 
-def parse_text(text_path, section_headers):
-    
-    from .utils import log
+    # Buffers for each field
+    cis_name = cis_level = cis_desc = cis_ration = cis_impact = ""
+    cis_audit = cis_remed = cis_defval = cis_refs = cis_control = cis_metre = ""
 
-    log(f"[+] Parsing Text Files: {text_path}")
-    flagStart = False 
-    #? Flag Start Changes as per the state
-    #? All Other Flag details initialized to False
-    flagName = False
-    flagLevel = False
-    flagDesc = False
-    flagRation = False
-    flagImpact = False
-    flagAudit = False
-    flagRemed = False
-    flagDefval = False
-    flagRefs = False
-    flagControl = False
-    flagMetre = False 
-    #? Initializing all cis desc values to "" (empty) so that for each iteration of each page of each pdf, it resets instead of appending
-    cis_name = ""
-    cis_level = ""
-    cis_desc = ""
-    cis_ration = ""
-    cis_impact = ""
-    cis_audit = ""
-    cis_remed = ""
-    cis_defval = ""
-    cis_refs = ""
-    cis_control = ""
-    cis_metre = ""
-
-    listObj =[]
-    with open(text_path,'r',encoding='utf-8') as filer:
-        for line in filer:
-            x = {}
-            if re.match(r"^(\d{1,2}(\.\d{1,2}){2,4})", line):
-                if cis_name != "" and cis_desc:
-                    cis_name = cis_name.replace(' \n\n','').replace('\n\n','').rstrip()
-                    cis_desc = cis_desc.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n',).rstrip()
-                    cis_ration = cis_ration.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
-                    cis_impact = cis_impact.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
-                    cis_audit = cis_audit.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
-                    cis_defval = cis_defval.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
-                    cis_refs = cis_refs.rstrip()
-                    cis_refs = cis_refs.strip().split('\n')
-                    cis_refs = [item.strip() for item in cis_refs if item]
-                    cis_level = cis_level.split('\n')
-                    cis_level = [item.strip() for item in cis_level if item]
-                    cis_control= cis_control.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
-                    cis_metre = cis_metre.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
-                    pattern = r"(#\s*.*|[A-Za-z]+\\[^\n]*)(?=\n|$)"
-                    
-                    if "Appendix" in cis_control:
-                        cis_control =cis_control[:cis_control.index("Appendix")]
-                    if "Appendix" in cis_metre:
-                        cis_metre = cis_metre[:cis_metre.index("Appendix")]
-                    
-                    match = re.search(pattern, cis_audit, re.DOTALL)
-                    if match:
-                        main_audit_text = cis_audit[:match.start()].strip()
-                        code_block_text = cis_audit[match.start():].strip()
+    def extract_id_and_title(control_heading):
+        """Extracts control number (ID) and title, even if multi-line."""
+        lines = [l.strip() for l in control_heading.strip().splitlines() if l.strip()]
+        if not lines:
+            return "", ""
+        id_match = re.match(r"^((\d+\.)+\d+)", lines[0])
+        if id_match:
+            numeric_part = id_match.group(1)
+            title_rest = lines[0][len(numeric_part):].lstrip(" .-")
+            if title_rest:
+                cleaned_title = title_rest
+            elif len(lines) > 1:
+                cleaned_title = lines[1]
+            else:
+                cleaned_title = ""
+        else:
+            for idx, line in enumerate(lines[1:], 1):
+                id_match = re.match(r"^((\d+\.)+\d+)", line)
+                if id_match:
+                    numeric_part = id_match.group(1)
+                    title_rest = line[len(numeric_part):].lstrip(" .-")
+                    if title_rest:
+                        cleaned_title = title_rest
+                    elif idx + 1 < len(lines):
+                        cleaned_title = lines[idx + 1]
                     else:
-                        main_audit_text = cis_audit
-                        code_block_text = ""
+                        cleaned_title = ""
+                    break
+            else:
+                numeric_part = ""
+                cleaned_title = lines[0]
+        cleaned_title = cleaned_title.strip()
+        if not cleaned_title and len(lines) > 1:
+            for l in lines[1:]:
+                if l.strip():
+                    cleaned_title = l.strip()
+                    break
+        return numeric_part, cleaned_title
 
-                    match = re.search(pattern, cis_remed, re.DOTALL)
-                    if match:
-                        main_remed_text = cis_remed[:match.start()].strip()
-                        remed_code_block_text = cis_remed[match.start():].strip()
-                    else:
-                        main_remed_text = cis_remed
-                        remed_code_block_text = ""
+    listObj = []
+    with open(text_path, 'r', encoding='utf-8') as filer:
+        lines = [l.rstrip('\n\r') for l in filer]
+        n = len(lines)
+        i = 0
+        while i < n:
+            line = lines[i]
 
-                    match = re.match(r"^((\d+\.)+\d+)\s+(.*)", cis_name, re.DOTALL)
-                    if match:
-                        numeric_part = match.group(1)
-                        cleaned_title = match.group(3).strip()
-                    else:
-                        numeric_part = ""
-                        cleaned_title = cis_name
-
-                    title = cleaned_title
-                    method = ""
-                    pattern = r"\((.*?)\)"
-                    match = re.search(pattern, cis_name)
-                    if match:
-                        method = match.group(1)
-                        title = re.sub(pattern, '', cleaned_title).strip()
-
-                    if not cis_control.strip():
-                        result = []
-                    else:
-                        cleaned_text = re.sub(r"(IG \d|\u25cf)", "", cis_control).strip()
-                        pattern = r"(v\d+)\s+([\d.]+ [^\v]+?(?=(v\d+|$)))"
-                        matches = re.findall(pattern, cleaned_text)
-                        result = [{"Controls Version": match[0], "Control": match[1].strip()} for match in matches]
-
-                    formatted_data = []
-                    if cis_metre:
-                        components = cis_metre.split()
-                        keys = ["Techniques / Sub-techniques", "Tactics", "Mitigations"]
-                        data = {key: [] for key in keys}
-                        for component in components:
-                            if component.startswith("T1"):
-                                data["Techniques / Sub-techniques"].append(component)
-                            elif component.startswith("TA"):
-                                data["Tactics"].append(component)
-                            elif component.startswith("M1") and not component.startswith("Techniques"):
-                                data["Mitigations"].append(component)
-                        formatted_data = [
-                            {
-                                "Techniques / Sub-techniques": ", ".join(data["Techniques / Sub-techniques"]),
-                                "Tactics": ", ".join(data["Tactics"]),
-                                "Mitigations": ", ".join(data["Mitigations"]),
-                            }
-                        ]
-
-                    x['ID'] = numeric_part
-                    x['Title'] = title
-                    x['Method'] = method
-                    x['Profile Applicability'] = cis_level
-                    x['Description'] = cis_desc
-                    x['Rationale'] = cis_ration
-                    x['Impact'] = cis_impact
-                    x['Audit'] = main_audit_text
-                    x['Audit Commands'] = code_block_text
-                    x['Remediations'] = main_remed_text
-                    x['Remediation Commands'] = remed_code_block_text
-                    x['Default value'] = cis_defval
-                    x['References'] = cis_refs
-                    x['CIS Controls'] = result
-                    x['MITRE ATT&CK Mappings'] = formatted_data
-                    x['Compliant'] = ""  # For Excel dropdown
-                    cis_name = cis_level = cis_desc = cis_ration = cis_impact = cis_audit = cis_remed = cis_defval = cis_refs = cis_control = cis_metre = ""
-                    flagStart = False
-                    listObj.append(x)
-
-                cis_name = cis_level = cis_desc = cis_ration = cis_impact = cis_audit = cis_remed = cis_defval = cis_refs = cis_control = cis_metre = ""
+            # --- Multi-line heading: number only, next line is title
+            num_match = re.match(r"^((\d+\.)+\d+)\s*$", line.strip())
+            if num_match and (i + 1 < n) and lines[i + 1].strip():
+                cis_name = f"{num_match.group(1)} {lines[i+1].strip()}"
+                i += 2
                 flagStart = True
-                flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = True, False, False, False, False, False, False, False, False, False, False
+                flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
+                    True, False, False, False, False, False, False, False, False, False, False
+                continue
 
+            # --- Normal heading: number and title on same line
+            if re.match(r"^(\d{1,2}(?:\.\d{1,2}){1,4})\s+\S+", line):
+                # FLUSH previous control if any
+                if cis_name.strip():
+                    numeric_part, cleaned_title = extract_id_and_title(cis_name)
+                    if numeric_part or cleaned_title:
+                        # Section post-processing
+                        def norm(x): return x.replace(' \n\n','').replace('\n\n','').rstrip()
+                        cis_desc, cis_ration, cis_impact = map(norm, (cis_desc, cis_ration, cis_impact))
+                        cis_audit, cis_remed, cis_defval = map(norm, (cis_audit, cis_remed, cis_defval))
+                        cis_control, cis_metre = map(norm, (cis_control, cis_metre))
+                        # Profile Applicability as list
+                        cis_levels = [l.strip() for l in cis_level.strip().split('\n') if l.strip()] if cis_level else []
+                        # References as list
+                        cis_refs_list = [r.strip() for r in cis_refs.strip().split('\n') if r.strip()] if cis_refs else []
+                        # Compose control object
+                        x = {
+                            "ID": numeric_part,
+                            "Title": cleaned_title or (cis_name.strip().split(maxsplit=1)[1] if len(cis_name.strip().split(maxsplit=1))>1 else ""),
+                            "Method": "",
+                            "Profile Applicability": cis_levels,
+                            "Description": cis_desc.strip(),
+                            "Rationale": cis_ration.strip(),
+                            "Impact": cis_impact.strip(),
+                            "Audit": cis_audit.strip(),
+                            "Audit Commands": "",
+                            "Remediations": cis_remed.strip(),
+                            "Remediation Commands": "",
+                            "Default value": cis_defval.strip(),
+                            "References": cis_refs_list,
+                            "CIS Controls": [],
+                            "MITRE ATT&CK Mappings": [],
+                            "Compliant": "",
+                            "Ranking Score": None
+                        }
+                        listObj.append(x)
+                    # Reset fields
+                    cis_name = cis_level = cis_desc = cis_ration = cis_impact = ""
+                    cis_audit = cis_remed = cis_defval = cis_refs = cis_control = cis_metre = ""
+                # Start new control
+                cis_name = line.strip()
+                flagStart = True
+                flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
+                    True, False, False, False, False, False, False, False, False, False, False
+                i += 1
+                continue
+
+            # --- Section headers (robust/variant matching) ---
             if flagStart:
-                if any(h in line for h in ["Page", "P a g e"]):
+                norm_line = line.strip().lower()
+                if any(h in norm_line for h in ["page", "p a g e"]):
+                    i += 1
                     continue
-                if "Profile Applicability:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, True, False, False, False, False, False, False, False, False, False
-                if "Description:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, True, False, False, False, False, False, False, False, False
-                if "Rationale:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, True, False, False, False, False, False, False, False
-                if "Impact:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, False, True, False, False, False, False, False, False
-                if re.match(r"^Audit:", line):
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, False, False, True, False, False, False, False, False
-                if "Remediation:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, False, False, False, True, False, False, False, False
-                if "Default Value:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, False, False, False, False, True, False, False, False
-                if "References:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, False, False, False, False, False, True, False, False
-                if "CIS Controls:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, False, False, False, False, False, False, True, False
-                if "MITRE ATT&CK Mappings:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, False, False, False, False, False, False, False, True
-                if "This section is intentionally blank and exists to ensure" in line or "This section contains" in line:
+                # Profile Applicability (bullets/indented/multi-line)
+                if "profile applicability:" in norm_line:
+                    flagName, flagLevel = False, True
+                elif "description:" in norm_line:
+                    flagLevel, flagDesc = False, True
+                elif re.search(r"rationale statement:|rationale:", norm_line):
+                    flagDesc, flagRation = False, True
+                elif re.search(r"impact statement:|impact:", norm_line):
+                    flagRation, flagImpact = False, True
+                elif re.search(r"^audit procedure:|^audit:", norm_line):
+                    flagImpact, flagAudit = False, True
+                elif re.search(r"^remediation procedure:|^remediation:", norm_line):
+                    flagAudit, flagRemed = False, True
+                elif "default value:" in norm_line:
+                    flagRemed, flagDefval = False, True
+                elif "references:" in norm_line:
+                    flagDefval, flagRefs = False, True
+                elif "cis controls:" in norm_line:
+                    flagRefs, flagControl = False, True
+                elif "mitre att&ck mappings:" in norm_line:
+                    flagControl, flagMetre = False, True
+                elif "this section is intentionally blank" in norm_line or "this section contains" in norm_line:
                     flagName = flagLevel = flagDesc = flagRation = flagImpact = flagAudit = flagRemed = flagDefval = flagRefs = flagControl = flagMetre = False
                     cis_name = cis_level = cis_desc = cis_ration = cis_impact = cis_audit = cis_remed = cis_defval = cis_refs = cis_control = cis_metre = ""
                     flagStart = False
+                    i += 1
                     continue
+                # Field content
                 if flagName:
-                    cis_name += line
+                    cis_name += ('\n' if cis_name else '') + line.strip()
                 if flagLevel:
-                    cis_level += line.replace('Profile Applicability: \n','').replace('•  ','').replace(' \n','\n')
+                    val = line.replace('Profile Applicability:', '').replace('•', '').strip()
+                    if val: cis_level += val + "\n"
                 if flagDesc:
-                    cis_desc += line.replace('Description: \n','')
+                    cis_desc += line.replace('Description:', '').strip() + " "
                 if flagRation:
-                    cis_ration += line.replace('Rationale: \n','')
+                    cis_ration += line.replace('Rationale:', '').replace('Rationale Statement:', '').strip() + " "
                 if flagImpact:
-                    cis_impact += line.replace('Impact: \n','')
+                    cis_impact += line.replace('Impact:', '').replace('Impact Statement:', '').strip() + " "
                 if flagAudit:
-                    cis_audit += line.replace('Audit: \n','')
+                    cis_audit += line.replace('Audit:', '').replace('Audit Procedure:', '').strip() + " "
                 if flagRemed:
-                    cis_remed += line.replace('Remediation: \n','')
+                    cis_remed += line.replace('Remediation:', '').replace('Remediation Procedure:', '').strip() + " "
                 if flagDefval:
-                    cis_defval += line.replace('Default Value: \n','')
+                    cis_defval += line.replace('Default Value:', '').strip() + " "
                 if flagRefs:
-                    if "Additional Information" in line:
-                        flagRefs = False
-                        continue
-                    line = line.replace('References: ', '').strip()
-                    if re.match(r'^\d+\.\s', line):
-                        cis_refs += "\n" + line
-                    else:
-                        cis_refs += "" + line
+                    ref_line = line.replace('References:', '').strip()
+                    if ref_line: cis_refs += ref_line + "\n"
                 if flagControl:
-                    cis_control += line.replace('CIS Controls: \n','')
+                    cis_control += line.replace('CIS Controls:', '').strip() + " "
                 if flagMetre:
-                    cis_metre += line.replace('MITRE ATT&CK Mappings: \n','')
+                    cis_metre += line.replace('MITRE ATT&CK Mappings:', '').strip() + " "
+            i += 1
+
+        # Final flush for last control
+        if cis_name.strip():
+            numeric_part, cleaned_title = extract_id_and_title(cis_name)
+            if numeric_part or cleaned_title:
+                def norm(x): return x.replace(' \n\n', '').replace('\n\n', '').rstrip()
+                cis_desc, cis_ration, cis_impact = map(norm, (cis_desc, cis_ration, cis_impact))
+                cis_audit, cis_remed, cis_defval = map(norm, (cis_audit, cis_remed, cis_defval))
+                cis_control, cis_metre = map(norm, (cis_control, cis_metre))
+                cis_levels = [l.strip() for l in cis_level.strip().split('\n') if l.strip()] if cis_level else []
+                cis_refs_list = [r.strip() for r in cis_refs.strip().split('\n') if r.strip()] if cis_refs else []
+                x = {
+                    "ID": numeric_part,
+                    "Title": cleaned_title or (cis_name.strip().split(maxsplit=1)[1] if len(cis_name.strip().split(maxsplit=1))>1 else ""),
+                    "Method": "",
+                    "Profile Applicability": cis_levels,
+                    "Description": cis_desc.strip(),
+                    "Rationale": cis_ration.strip(),
+                    "Impact": cis_impact.strip(),
+                    "Audit": cis_audit.strip(),
+                    "Audit Commands": "",
+                    "Remediations": cis_remed.strip(),
+                    "Remediation Commands": "",
+                    "Default value": cis_defval.strip(),
+                    "References": cis_refs_list,
+                    "CIS Controls": [],
+                    "MITRE ATT&CK Mappings": [],
+                    "Compliant": "",
+                    "Ranking Score": None
+                }
+                listObj.append(x)
     return listObj
+
+

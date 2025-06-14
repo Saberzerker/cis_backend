@@ -1,154 +1,213 @@
-import json
-import os
-import sys
-import argparse
-from datetime import datetime
-from fpdf import FPDF
-import matplotlib.pyplot as plt
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Generate GRC Compliance Report PDF and stats JSON.")
-    parser.add_argument("--checklist", required=True, help="Path to checklist JSON")
-    parser.add_argument("--device", required=True, help="Device name")
-    parser.add_argument("--host", required=True, help="Host name")
-    parser.add_argument("--date", default=datetime.now().strftime("%Y-%m-%d"), help="Report date (default: today)")
-    parser.add_argument("--output_dir", default="reports", help="Directory to save reports")
-    return parser.parse_args()
+import re
 
-def summarize_checklist(checklist):
-    total = len(checklist)
-    compliant = sum(1 for x in checklist if x["status"].lower() == "compliant")
-    non_compliant = sum(1 for x in checklist if x["status"].lower() == "non-compliant")
-    skipped = sum(1 for x in checklist if x["status"].lower() == "skipped")
-    compliance_pct = (compliant / total) * 100 if total > 0 else 0
-    return {
-        "total": total,
-        "compliant": compliant,
-        "non_compliant": non_compliant,
-        "skipped": skipped,
-        "compliance_pct": round(compliance_pct, 1)
-    }
+def parse_text(text_path, section_headers, lookahead_lines=3):
+    from utils import log
 
-def create_pie_chart(stats, output_path):
-    labels = ['Compliant', 'Non-Compliant', 'Skipped']
-    sizes = [stats['compliant'], stats['non_compliant'], stats['skipped']]
-    colors = ['#66bb6a', '#ef5350', '#ffa726']
-    explode = [0.05 if s == max(sizes) and s > 0 else 0 for s in sizes]
-    plt.figure(figsize=(4, 4))
-    plt.pie(sizes, explode=explode, labels=labels, colors=colors, autopct='%1.0f%%', startangle=140)
-    plt.title('Compliance Status')
-    plt.tight_layout()
-    plt.savefig(output_path, bbox_inches='tight')
-    plt.close()
+    log(f"[+] Parsing Text Files: {text_path}")
+    flagStart = False
+    # All Other Flag details initialized to False
+    flagName = flagLevel = flagDesc = flagRation = flagImpact = flagAudit = flagRemed = flagDefval = flagRefs = flagControl = flagMetre = False
+    cis_name = cis_level = cis_desc = cis_ration = cis_impact = cis_audit = cis_remed = cis_defval = cis_refs = cis_control = cis_metre = ""
 
-class PDF(FPDF):
-    def header(self):
-        self.set_font('Arial', 'B', 16)
-        self.cell(0, 10, 'GRC Compliance Report', ln=True, align='C')
-        self.ln(2)
+    listObj = []
+    with open(text_path, 'r', encoding='utf-8') as filer:
+        lines = filer.readlines()
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            # Match any control like 1.1, 1.1.1, 1.1.1.1, ... (at least 1 dot)
+            control_match = re.match(r"^(\d{1,2}(?:\.\d{1,2}){1,4})\s+(.+)", line)
+            is_control = False
+            if control_match:
+                # Look ahead for section headers in next N lines to confirm it's a control, not just a heading
+                for j in range(1, lookahead_lines+1):
+                    if i+j < len(lines):
+                        next_line = lines[i+j]
+                        if any(header in next_line for header in section_headers):
+                            is_control = True
+                            break
+            if is_control:
+                if cis_name != "" and cis_desc:
+                    # (Same logic as before for field extraction)
+                    cis_name = cis_name.replace(' \n\n','').replace('\n\n','').rstrip()
+                    cis_desc = cis_desc.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n',).rstrip()
+                    cis_ration = cis_ration.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
+                    cis_impact = cis_impact.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
+                    cis_audit = cis_audit.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
+                    cis_defval = cis_defval.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
+                    cis_refs = cis_refs.rstrip()
+                    cis_refs = cis_refs.strip().split('\n')
+                    cis_refs = [item.strip() for item in cis_refs if item]
+                    cis_level = cis_level.split('\n')
+                    cis_level = [item.strip() for item in cis_level if item]
+                    cis_control = cis_control.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
+                    cis_metre = cis_metre.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
+                    pattern = r"(#\s*.*|[A-Za-z]+\\[^\n]*)(?=\n|$)"
 
-    def chapter_title(self, title):
-        self.set_font('Arial', 'B', 12)
-        self.cell(0, 8, title, ln=True)
-        self.ln(2)
+                    if "Appendix" in cis_control:
+                        cis_control = cis_control[:cis_control.index("Appendix")]
+                    if "Appendix" in cis_metre:
+                        cis_metre = cis_metre[:cis_metre.index("Appendix")]
 
-    def chapter_body(self, body):
-        self.set_font('Arial', '', 11)
-        self.multi_cell(0, 7, body)
-        self.ln(1)
+                    match = re.search(pattern, cis_audit, re.DOTALL)
+                    if match:
+                        main_audit_text = cis_audit[:match.start()].strip()
+                        code_block_text = cis_audit[match.start():].strip()
+                    else:
+                        main_audit_text = cis_audit
+                        code_block_text = ""
 
-def generate_grc_pdf(checklist, stats, device, host, date, pie_img_path, output_pdf_path):
-    pdf = PDF()
-    pdf.add_page()
+                    match = re.search(pattern, cis_remed, re.DOTALL)
+                    if match:
+                        main_remed_text = cis_remed[:match.start()].strip()
+                        remed_code_block_text = cis_remed[match.start():].strip()
+                    else:
+                        main_remed_text = cis_remed
+                        remed_code_block_text = ""
 
-    # Header info
-    pdf.set_font('Arial', '', 12)
-    pdf.cell(0, 8, f"Device Name: {device}", ln=True)
-    pdf.cell(0, 8, f"Host Name: {host}", ln=True)
-    pdf.cell(0, 8, f"Date: {date}", ln=True)
-    pdf.ln(4)
+                    match = re.match(r"^((\d+\.)+\d+)\s+(.*)", cis_name, re.DOTALL)
+                    if match:
+                        numeric_part = match.group(1)
+                        cleaned_title = match.group(3).strip()
+                    else:
+                        numeric_part = ""
+                        cleaned_title = cis_name
 
-    # Executive Summary
-    pdf.chapter_title("Executive Summary")
-    summary = (
-        f"Total Controls Evaluated: {stats['total']}\n"
-        f"Compliant: {stats['compliant']}\n"
-        f"Non-Compliant: {stats['non_compliant']}\n"
-        f"Skipped: {stats['skipped']}\n"
-        f"Compliance Percentage: {stats['compliance_pct']}%"
-    )
-    pdf.chapter_body(summary)
-    pdf.ln(2)
+                    title = cleaned_title
+                    method = ""
+                    pattern = r"\((.*?)\)"
+                    match = re.search(pattern, cis_name)
+                    if match:
+                        method = match.group(1)
+                        title = re.sub(pattern, '', cleaned_title).strip()
 
-    # Pie Chart
-    if os.path.exists(pie_img_path):
-        pdf.chapter_title("Compliance Status Chart")
-        pdf.image(pie_img_path, x=pdf.get_x()+30, w=80)
-        pdf.ln(8)
+                    # CIS Controls parsing
+                    if not cis_control.strip():
+                        result = []
+                    else:
+                        cleaned_text = re.sub(r"(IG \d|\u25cf)", "", cis_control).strip()
+                        pattern = r"(v\d+)\s+([\d.]+ [^\v]+?(?=(v\d+|$)))"
+                        matches = re.findall(pattern, cleaned_text)
+                        result = [{"Controls Version": match[0], "Control": match[1].strip()} for match in matches]
 
-    # Detailed Checklist
-    pdf.chapter_title("Detailed Checklist")
-    pdf.set_font('Arial', 'B', 10)
-    pdf.cell(25, 8, "Control ID", border=1)
-    pdf.cell(85, 8, "Title", border=1)
-    pdf.cell(30, 8, "Status", border=1)
-    pdf.cell(0, 8, "Notes", border=1, ln=True)
-    pdf.set_font('Arial', '', 10)
-    for item in checklist:
-        pdf.cell(25, 8, str(item["id"]), border=1)
-        pdf.cell(85, 8, str(item["title"])[:50] + ('...' if len(item["title"]) > 50 else ''), border=1)
-        status = str(item["status"]).capitalize()
-        # Color status
-        if status == "Compliant":
-            pdf.set_text_color(102, 187, 106)
-        elif status == "Non-compliant":
-            pdf.set_text_color(239, 83, 80)
-        elif status == "Skipped":
-            pdf.set_text_color(255, 167, 38)
-        pdf.cell(30, 8, status, border=1)
-        pdf.set_text_color(0, 0, 0)
-        note = str(item.get("note", ""))[:30] + ('...' if len(item.get("note", "")) > 30 else '')
-        pdf.cell(0, 8, note, border=1, ln=True)
-    pdf.ln(8)
+                    # MITRE ATT&CK Mappings
+                    formatted_data = []
+                    if cis_metre:
+                        components = cis_metre.split()
+                        keys = ["Techniques / Sub-techniques", "Tactics", "Mitigations"]
+                        data = {key: [] for key in keys}
+                        for component in components:
+                            if component.startswith("T1"):
+                                data["Techniques / Sub-techniques"].append(component)
+                            elif component.startswith("TA"):
+                                data["Tactics"].append(component)
+                            elif component.startswith("M1") and not component.startswith("Techniques"):
+                                data["Mitigations"].append(component)
+                        formatted_data = [
+                            {
+                                "Techniques / Sub-techniques": ", ".join(data["Techniques / Sub-techniques"]),
+                                "Tactics": ", ".join(data["Tactics"]),
+                                "Mitigations": ", ".join(data["Mitigations"]),
+                            }
+                        ]
 
-    pdf.set_font('Arial', 'I', 9)
-    pdf.cell(0, 10, "This report is generated automatically. For queries, contact your GRC team.", ln=True, align='C')
+                    x = {
+                        'ID': numeric_part,
+                        'Title': title,
+                        'Method': method,
+                        'Profile Applicability': cis_level,
+                        'Description': cis_desc,
+                        'Rationale': cis_ration,
+                        'Impact': cis_impact,
+                        'Audit': main_audit_text,
+                        'Audit Commands': code_block_text,
+                        'Remediations': main_remed_text,
+                        'Remediation Commands': remed_code_block_text,
+                        'Default value': cis_defval,
+                        'References': cis_refs,
+                        'CIS Controls': result,
+                        'MITRE ATT&CK Mappings': formatted_data,
+                        'Compliant': "",
+                    }
+                    listObj.append(x)
 
-    pdf.output(output_pdf_path)
+                # Reset for next control
+                cis_name = cis_level = cis_desc = cis_ration = cis_impact = cis_audit = cis_remed = cis_defval = cis_refs = cis_control = cis_metre = ""
+                flagStart = True
+                flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = True, False, False, False, False, False, False, False, False, False, False
+                i += 1
+                continue
 
-def main():
-    args = parse_args()
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    # Load checklist
-    with open(args.checklist, "r", encoding="utf-8") as f:
-        checklist = json.load(f)
-
-    # Calculate stats
-    stats = summarize_checklist(checklist)
-
-    # Pie chart
-    pie_img_path = os.path.join(args.output_dir, "compliance_pie.png")
-    create_pie_chart(stats, pie_img_path)
-
-    # PDF output
-    pdf_name = f"{args.device}_{args.host}_GRC_REPORT_{args.date}.pdf"
-    pdf_path = os.path.join(args.output_dir, pdf_name)
-    generate_grc_pdf(checklist, stats, args.device, args.host, args.date, pie_img_path, pdf_path)
-
-    # Save stats JSON
-    stats_json = {
-        "device": args.device,
-        "host": args.host,
-        "date": args.date,
-        **stats
-    }
-    stats_path = os.path.join(args.output_dir, f"{args.device}_{args.host}_GRC_STATS_{args.date}.json")
-    with open(stats_path, "w", encoding="utf-8") as f:
-        json.dump(stats_json, f, indent=2)
-
-    print(f"[+] GRC PDF Report saved to: {pdf_path}")
-    print(f"[+] Compliance stats JSON saved to: {stats_path}")
-
-if __name__ == "__main__":
-    main()
+            if flagStart:
+                if any(h in line for h in ["Page", "P a g e"]):
+                    i += 1
+                    continue
+                if "Profile Applicability:" in line:
+                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
+                        False, True, False, False, False, False, False, False, False, False, False
+                if "Description:" in line:
+                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
+                        False, False, True, False, False, False, False, False, False, False, False
+                if "Rationale:" in line:
+                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
+                        False, False, False, True, False, False, False, False, False, False, False
+                if "Impact:" in line:
+                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
+                        False, False, False, False, True, False, False, False, False, False, False
+                if re.match(r"^Audit:", line):
+                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
+                        False, False, False, False, False, True, False, False, False, False, False
+                if "Remediation:" in line:
+                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
+                        False, False, False, False, False, False, True, False, False, False, False
+                if "Default Value:" in line:
+                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
+                        False, False, False, False, False, False, False, True, False, False, False
+                if "References:" in line:
+                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
+                        False, False, False, False, False, False, False, False, True, False, False
+                if "CIS Controls:" in line:
+                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
+                        False, False, False, False, False, False, False, False, False, True, False
+                if "MITRE ATT&CK Mappings:" in line:
+                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
+                        False, False, False, False, False, False, False, False, False, False, True
+                if "This section is intentionally blank and exists to ensure" in line or "This section contains" in line:
+                    flagName = flagLevel = flagDesc = flagRation = flagImpact = flagAudit = flagRemed = flagDefval = flagRefs = flagControl = flagMetre = False
+                    cis_name = cis_level = cis_desc = cis_ration = cis_impact = cis_audit = cis_remed = cis_defval = cis_refs = cis_control = cis_metre = ""
+                    flagStart = False
+                    i += 1
+                    continue
+                if flagName:
+                    cis_name += line
+                if flagLevel:
+                    cis_level += line.replace('Profile Applicability: \n', '').replace('•  ', '').replace(' \n', '\n')
+                if flagDesc:
+                    cis_desc += line.replace('Description: \n', '')
+                if flagRation:
+                    cis_ration += line.replace('Rationale: \n', '')
+                if flagImpact:
+                    cis_impact += line.replace('Impact: \n', '')
+                if flagAudit:
+                    cis_audit += line.replace('Audit: \n', '')
+                if flagRemed:
+                    cis_remed += line.replace('Remediation: \n', '')
+                if flagDefval:
+                    cis_defval += line.replace('Default Value: \n', '')
+                if flagRefs:
+                    if "Additional Information" in line:
+                        flagRefs = False
+                        i += 1
+                        continue
+                    line = line.replace('References: ', '').strip()
+                    if re.match(r'^\d+\.\s', line):
+                        cis_refs += "\n" + line
+                    else:
+                        cis_refs += "" + line
+                if flagControl:
+                    cis_control += line.replace('CIS Controls: \n', '')
+                if flagMetre:
+                    cis_metre += line.replace('MITRE ATT&CK Mappings: \n', '')
+            i += 1
+    return listObj

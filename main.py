@@ -1,66 +1,19 @@
 import os
+import re
 import json
 import csv
-import re
-from config import (
-    INPUT_DIR, OUTPUT_TEXT, OUTPUT_JSON, OUTPUT_CSV, LOG_FILE, SECTION_HEADERS,
-    OUTPUT_VALIDATION, PDF_ACCURATE, PDF_DISCREPANCY, LOG_DIR
-)
 from utils import setup_logging, log, extract_text, clean_text, ensure_directories
 from parser import parse_text
 from llm_validation import llm_cross_validate
+from config import SECTION_HEADERS
 
-def export_json(data, json_path):
-    with open(json_path, 'w', encoding="utf-8") as json_file:
-        json.dump(data, json_file, indent=4, separators=(',', ':'))
-    log(f"[+] JSON File Exported: {json_path}")
-
-def export_csv(data, csv_path):
-    if not data:
-        log("[!] No data to write to CSV.")
-        return
-    keys = data[0].keys()
-    with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=keys)
-        writer.writeheader()
-        for row in data:
-            for k, v in row.items():
-                if isinstance(v, list):
-                    row[k] = "; ".join([json.dumps(i) if isinstance(i, dict) else str(i) for i in v])
-            writer.writerow(row)
-    log(f"[+] CSV exported: {csv_path}")
-
-def save_validation_report(base_name, report):
-    validation_path = os.path.join(OUTPUT_VALIDATION, f"{base_name}_validation.json")
-    with open(validation_path, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2)
-    log(f"[+] Validation report exported: {validation_path}")
-
-def process_pdf(pdf_path, base_name):
-    txt_path = os.path.join(OUTPUT_TEXT, base_name + ".txt")
-    json_path = os.path.join(OUTPUT_JSON, base_name + ".json")
-    csv_path = os.path.join(OUTPUT_CSV, base_name + ".csv")
-
-    extract_text(pdf_path, txt_path)
-    clean_text(txt_path)
-    parsed = parse_text(txt_path, SECTION_HEADERS)
-    export_json(parsed, json_path)
-    export_csv(parsed, csv_path)
-
-    validation_result = llm_cross_validate(parsed, txt_path)
-    save_validation_report(base_name, validation_result)
-
-    # Route based on validation
-    if validation_result["status"] == "ok":
-        os.makedirs(PDF_ACCURATE, exist_ok=True)
-        target = os.path.join(PDF_ACCURATE, os.path.basename(pdf_path))
-        os.replace(pdf_path, target)
-        log(f"[+] PDF moved to accurate: {target}")
-    else:
-        os.makedirs(PDF_DISCREPANCY, exist_ok=True)
-        target = os.path.join(PDF_DISCREPANCY, os.path.basename(pdf_path))
-        os.replace(pdf_path, target)
-        log(f"[!] PDF moved to discrepancy: {target}")
+OUTPUT_DIR = "output"
+OUTPUT_TEXT = os.path.join(OUTPUT_DIR, "text")
+OUTPUT_VALIDATED_JSON = os.path.join(OUTPUT_DIR, "validated", "json")
+OUTPUT_VALIDATED_CSV = os.path.join(OUTPUT_DIR, "validated", "csv")
+OUTPUT_DISCREPANCY_JSON = os.path.join(OUTPUT_DIR, "discrepancy", "json")
+OUTPUT_DISCREPANCY_CSV = os.path.join(OUTPUT_DIR, "discrepancy", "csv")
+LOG_DIR = "logs"
 
 def get_latest_pdf_dir():
     """
@@ -77,28 +30,99 @@ def get_latest_pdf_dir():
     latest = max(candidates, key=lambda d: d.split("_")[-1])
     return os.path.join(base_dir, latest)
 
+def export_json(parsed, json_path, pdf_path):
+    # Add metadata about source PDF and processing
+    out = {
+        "source_pdf": os.path.abspath(pdf_path),
+        "records": parsed
+    }
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(out, f, indent=2)
+
+# def export_csv(parsed, csv_path):
+#     if not parsed:
+#         return
+#     fieldnames = list(parsed[0].keys())
+#     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+#         writer = csv.DictWriter(f, fieldnames=fieldnames)
+#         writer.writeheader()
+#         for row in parsed:
+#             writer.writerow(row)
+
+
+def export_csv(parsed, csv_path):
+    # If parsed is empty, use default fieldnames
+    fieldnames = list(parsed[0].keys()) if parsed else [
+        "ID", "Title", "Method", "Profile Applicability", "Description", "Rationale", "Impact", 
+        "Audit", "Audit Commands", "Remediations", "Remediation Commands", 
+        "Default value", "References", "CIS Controls", "MITRE ATT&CK Mappings", "Compliant"
+    ]
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in parsed:
+            writer.writerow(row)
+
+def save_validation_report(base_name, report, outdir):
+    path = os.path.join(outdir, base_name + "_validation.json")
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(report, f, indent=2)
+
 def main():
     ensure_directories([
-        INPUT_DIR, OUTPUT_TEXT, OUTPUT_JSON, OUTPUT_CSV, OUTPUT_VALIDATION,
-        PDF_ACCURATE, PDF_DISCREPANCY, LOG_DIR
+        OUTPUT_TEXT, LOG_DIR,
+        OUTPUT_VALIDATED_JSON, OUTPUT_VALIDATED_CSV,
+        OUTPUT_DISCREPANCY_JSON, OUTPUT_DISCREPANCY_CSV
     ])
-    setup_logging(LOG_FILE)
+    setup_logging(os.path.join(LOG_DIR, "pipeline.log"))
     log("[*] Starting CIS PDF parsing pipeline...")
 
     # Use the latest versioned PDF input directory
     pdf_dir = get_latest_pdf_dir()
     log(f"[*] Using PDF input directory: {pdf_dir}")
 
+    summary_stats = []  # For ranking at the end
+
     for filename in os.listdir(pdf_dir):
-        if filename.endswith(".pdf"):
-            pdf_path = os.path.join(pdf_dir, filename)
-            base = os.path.splitext(filename)[0]
-            try:
-                process_pdf(pdf_path, base)
-                log(f"[+] Finished processing: {filename}")
-            except Exception as e:
-                log(f"[ERROR] Failed processing {filename}: {e}", "error")
-    log("[*] All PDFs processed.")
+        if not filename.lower().endswith('.pdf'):
+            continue
+        pdf_path = os.path.join(pdf_dir, filename)
+        base = os.path.splitext(filename)[0]
+        txt_path = os.path.join(OUTPUT_TEXT, base + ".txt")
+        try:
+            extract_text(pdf_path, txt_path)
+            clean_text(txt_path)
+            parsed = parse_text(txt_path)
+            # Export outputs
+            validation = llm_cross_validate(parsed, txt_path)
+            if validation["status"] == "ok":
+                json_dir = OUTPUT_VALIDATED_JSON
+                csv_dir = OUTPUT_VALIDATED_CSV
+            else:
+                json_dir = OUTPUT_DISCREPANCY_JSON
+                csv_dir = OUTPUT_DISCREPANCY_CSV
+            json_path = os.path.join(json_dir, base + ".json")
+            csv_path = os.path.join(csv_dir, base + ".csv")
+            export_json(parsed, json_path, pdf_path)
+            export_csv(parsed, csv_path)
+            # Validation report is stored alongside the JSON output
+            save_validation_report(base, validation, json_dir)
+            log(f"[+] {filename} processed: {validation['summary']}")
+            summary_stats.append({
+                "pdf": filename,
+                "validation_percent": validation["percent_found"],
+                "status": validation["status"],
+                "controls_total": validation["expected_controls"],
+                "controls_missing": validation["missing_count"],
+            })
+        except Exception as e:
+            log(f"[ERROR] Failed processing {filename}: {e}", "error")
+
+    # Save ranking summary
+    ranking = sorted(summary_stats, key=lambda x: x["validation_percent"], reverse=True)
+    with open(os.path.join(OUTPUT_DIR, "summary_validation_ranking.json"), 'w', encoding='utf-8') as f:
+        json.dump(ranking, f, indent=2)
+    log("[*] Validation ranking summary written.")
 
 if __name__ == "__main__":
     main()
