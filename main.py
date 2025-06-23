@@ -395,7 +395,7 @@ def process_pdf(pdf_path, OUTPUT_TEXT, OUTPUT_VALIDATED_JSON, OUTPUT_VALIDATED_C
         log(f"[+] {os.path.basename(pdf_path)} processed: {validation['summary']}")
         return {
             "pdf": os.path.basename(pdf_path),
-            "validation_percent": validation["percent_found"],
+            "validation_percent": validation["percent_controls_found"],
             "status": validation["status"],
             "controls_total": validation["expected_controls"],
             "controls_missing": validation["missing_count"],

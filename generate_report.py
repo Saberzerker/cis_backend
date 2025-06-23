@@ -1,213 +1,177 @@
+import uuid
+from datetime import datetime
+from pymongo import MongoClient
+import gridfs
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
+import io
 
-import re
+# CONFIG
+MONGO_URI = "mongodb://localhost:27017/"
+DB_NAME = "your_db_name"
 
-def parse_text(text_path, section_headers, lookahead_lines=3):
-    from utils import log
+def fetch_checklist(db, save_id=None, device_id=None):
+    query = {}
+    if save_id: query["save_id"] = save_id
+    if device_id: query["device_id"] = device_id
+    return list(db.compliance_checks.find(query))
 
-    log(f"[+] Parsing Text Files: {text_path}")
-    flagStart = False
-    # All Other Flag details initialized to False
-    flagName = flagLevel = flagDesc = flagRation = flagImpact = flagAudit = flagRemed = flagDefval = flagRefs = flagControl = flagMetre = False
-    cis_name = cis_level = cis_desc = cis_ration = cis_impact = cis_audit = cis_remed = cis_defval = cis_refs = cis_control = cis_metre = ""
+def get_user_map(db):
+    return {str(u["_id"]): u.get("name", u.get("email", "")) for u in db.users.find()}
 
-    listObj = []
-    with open(text_path, 'r', encoding='utf-8') as filer:
-        lines = filer.readlines()
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            # Match any control like 1.1, 1.1.1, 1.1.1.1, ... (at least 1 dot)
-            control_match = re.match(r"^(\d{1,2}(?:\.\d{1,2}){1,4})\s+(.+)", line)
-            is_control = False
-            if control_match:
-                # Look ahead for section headers in next N lines to confirm it's a control, not just a heading
-                for j in range(1, lookahead_lines+1):
-                    if i+j < len(lines):
-                        next_line = lines[i+j]
-                        if any(header in next_line for header in section_headers):
-                            is_control = True
-                            break
-            if is_control:
-                if cis_name != "" and cis_desc:
-                    # (Same logic as before for field extraction)
-                    cis_name = cis_name.replace(' \n\n','').replace('\n\n','').rstrip()
-                    cis_desc = cis_desc.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n',).rstrip()
-                    cis_ration = cis_ration.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
-                    cis_impact = cis_impact.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
-                    cis_audit = cis_audit.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
-                    cis_defval = cis_defval.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
-                    cis_refs = cis_refs.rstrip()
-                    cis_refs = cis_refs.strip().split('\n')
-                    cis_refs = [item.strip() for item in cis_refs if item]
-                    cis_level = cis_level.split('\n')
-                    cis_level = [item.strip() for item in cis_level if item]
-                    cis_control = cis_control.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
-                    cis_metre = cis_metre.replace(' \n\n','XMXM').replace('\n','').replace('XMXM','\n\n').rstrip()
-                    pattern = r"(#\s*.*|[A-Za-z]+\\[^\n]*)(?=\n|$)"
+def get_device_map(db):
+    return {str(d["_id"]): d.get("hostname", d.get("name", "")) for d in db.devices.find()}
 
-                    if "Appendix" in cis_control:
-                        cis_control = cis_control[:cis_control.index("Appendix")]
-                    if "Appendix" in cis_metre:
-                        cis_metre = cis_metre[:cis_metre.index("Appendix")]
+def get_control_map(db):
+    return {c["control_id"]: c.get("description", "") for c in db.compliance_controls.find()}
 
-                    match = re.search(pattern, cis_audit, re.DOTALL)
-                    if match:
-                        main_audit_text = cis_audit[:match.start()].strip()
-                        code_block_text = cis_audit[match.start():].strip()
-                    else:
-                        main_audit_text = cis_audit
-                        code_block_text = ""
+def get_benchmark_map(db):
+    return {str(b["_id"]): b.get("title", b.get("name", "")) for b in db.benchmarks.find()}
 
-                    match = re.search(pattern, cis_remed, re.DOTALL)
-                    if match:
-                        main_remed_text = cis_remed[:match.start()].strip()
-                        remed_code_block_text = cis_remed[match.start():].strip()
-                    else:
-                        main_remed_text = cis_remed
-                        remed_code_block_text = ""
+def fetch_additional_info(db, device_id, save_id, user_id):
+    device = db.devices.find_one({"_id": device_id})
+    save_config = db.saved_configurations.find_one({"_id": save_id})
+    user = db.users.find_one({"_id": user_id})
+    return device, save_config, user
 
-                    match = re.match(r"^((\d+\.)+\d+)\s+(.*)", cis_name, re.DOTALL)
-                    if match:
-                        numeric_part = match.group(1)
-                        cleaned_title = match.group(3).strip()
-                    else:
-                        numeric_part = ""
-                        cleaned_title = cis_name
+def generate_grc_pdf(checklist, user_map, device_map, control_map, benchmark_map, device, save_config, user, generated_at):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=40, bottomMargin=18)
+    styles = getSampleStyleSheet()
+    elements = []
 
-                    title = cleaned_title
-                    method = ""
-                    pattern = r"\((.*?)\)"
-                    match = re.search(pattern, cis_name)
-                    if match:
-                        method = match.group(1)
-                        title = re.sub(pattern, '', cleaned_title).strip()
+    # --- Cover Page ---
+    elements.append(Paragraph("GRC Compliance Report", styles['Title']))
+    elements.append(Spacer(1, 16))
+    elements.append(Paragraph(f"Generated At: {generated_at.strftime('%Y-%m-%d %H:%M:%S UTC')}", styles['Normal']))
+    elements.append(Spacer(1, 12))
+    if device:
+        elements.append(Paragraph(f"<b>Device:</b> {device.get('hostname', device.get('name', ''))}", styles['Normal']))
+    if user:
+        elements.append(Paragraph(f"<b>Generated By:</b> {user.get('name', user.get('email', ''))}", styles['Normal']))
+    if save_config:
+        elements.append(Paragraph(f"<b>Configuration:</b> {save_config.get('name', str(save_config.get('_id', '')))}", styles['Normal']))
+    elements.append(Spacer(1, 24))
+    elements.append(Paragraph("This report provides a comprehensive overview of compliance checks performed on the specified system and configuration, including control mappings, benchmarks, and status outcomes, suitable for GRC review.", styles['Italic']))
+    elements.append(PageBreak())
 
-                    # CIS Controls parsing
-                    if not cis_control.strip():
-                        result = []
-                    else:
-                        cleaned_text = re.sub(r"(IG \d|\u25cf)", "", cis_control).strip()
-                        pattern = r"(v\d+)\s+([\d.]+ [^\v]+?(?=(v\d+|$)))"
-                        matches = re.findall(pattern, cleaned_text)
-                        result = [{"Controls Version": match[0], "Control": match[1].strip()} for match in matches]
+    # --- Summary Section ---
+    total = len(checklist)
+    status_counts = {"checked": 0, "crossed": 0, "skipped": 0, "empty": 0}
+    for c in checklist:
+        st = c.get("status", "empty")
+        if st in status_counts:
+            status_counts[st] += 1
+        else:
+            status_counts["empty"] += 1
 
-                    # MITRE ATT&CK Mappings
-                    formatted_data = []
-                    if cis_metre:
-                        components = cis_metre.split()
-                        keys = ["Techniques / Sub-techniques", "Tactics", "Mitigations"]
-                        data = {key: [] for key in keys}
-                        for component in components:
-                            if component.startswith("T1"):
-                                data["Techniques / Sub-techniques"].append(component)
-                            elif component.startswith("TA"):
-                                data["Tactics"].append(component)
-                            elif component.startswith("M1") and not component.startswith("Techniques"):
-                                data["Mitigations"].append(component)
-                        formatted_data = [
-                            {
-                                "Techniques / Sub-techniques": ", ".join(data["Techniques / Sub-techniques"]),
-                                "Tactics": ", ".join(data["Tactics"]),
-                                "Mitigations": ", ".join(data["Mitigations"]),
-                            }
-                        ]
+    summary_data = [
+        ["Total Checks", str(total)],
+        ["Checked", str(status_counts["checked"])],
+        ["Crossed", str(status_counts["crossed"])],
+        ["Skipped", str(status_counts["skipped"])],
+        ["Empty", str(status_counts["empty"])]
+    ]
+    elements.append(Paragraph("Summary", styles["Heading2"]))
+    summary_table = Table(summary_data, hAlign="LEFT")
+    summary_table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.grey),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("FONTNAME", (0,0), (-1,-1), "Helvetica"),
+        ("FONTSIZE", (0,0), (-1,-1), 10),
+        ("BOTTOMPADDING", (0,0), (-1,0), 6),
+        ("BACKGROUND", (0,1), (-1,-1), colors.whitesmoke),
+    ]))
+    elements.append(summary_table)
+    elements.append(Spacer(1, 20))
 
-                    x = {
-                        'ID': numeric_part,
-                        'Title': title,
-                        'Method': method,
-                        'Profile Applicability': cis_level,
-                        'Description': cis_desc,
-                        'Rationale': cis_ration,
-                        'Impact': cis_impact,
-                        'Audit': main_audit_text,
-                        'Audit Commands': code_block_text,
-                        'Remediations': main_remed_text,
-                        'Remediation Commands': remed_code_block_text,
-                        'Default value': cis_defval,
-                        'References': cis_refs,
-                        'CIS Controls': result,
-                        'MITRE ATT&CK Mappings': formatted_data,
-                        'Compliant': "",
-                    }
-                    listObj.append(x)
+    # --- Checklist Table Section ---
+    elements.append(Paragraph("Detailed Compliance Checklist", styles["Heading2"]))
+    table_data = [[
+        "Check ID", "Control", "Description", "Benchmark", "Status", "Checked By", "Checked At"
+    ]]
+    for entry in checklist:
+        checked_by = user_map.get(str(entry.get("checked_by", "")), str(entry.get("checked_by", "")))
+        checked_at = entry.get("checked_at", "")
+        if checked_at and hasattr(checked_at, "strftime"):
+            checked_at = checked_at.strftime("%Y-%m-%d %H:%M")
+        else:
+            checked_at = str(checked_at)
+        row = [
+            str(entry.get("check_id", "")),
+            entry.get("control_id", ""),
+            control_map.get(entry.get("control_id", ""), ""),
+            benchmark_map.get(str(entry.get("benchmark_id", "")), str(entry.get("benchmark_id", ""))),
+            entry.get("status", ""),
+            checked_by,
+            checked_at
+        ]
+        table_data.append(row)
 
-                # Reset for next control
-                cis_name = cis_level = cis_desc = cis_ration = cis_impact = cis_audit = cis_remed = cis_defval = cis_refs = cis_control = cis_metre = ""
-                flagStart = True
-                flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = True, False, False, False, False, False, False, False, False, False, False
-                i += 1
-                continue
+    checklist_table = Table(table_data, repeatRows=1, colWidths=[55, 50, 130, 80, 45, 60, 60])
+    checklist_table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.darkblue),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("ALIGN", (0,0), (-1,-1), "LEFT"),
+        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ("FONTSIZE", (0,0), (-1,0), 9),
+        ("FONTSIZE", (0,1), (-1,-1), 8),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.whitesmoke]),
+        ("VALIGN", (0,0), (-1,-1), "TOP"),
+        ("LINEBELOW", (0,0), (-1,-1), 0.25, colors.grey)
+    ]))
+    elements.append(checklist_table)
 
-            if flagStart:
-                if any(h in line for h in ["Page", "P a g e"]):
-                    i += 1
-                    continue
-                if "Profile Applicability:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, True, False, False, False, False, False, False, False, False, False
-                if "Description:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, True, False, False, False, False, False, False, False, False
-                if "Rationale:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, True, False, False, False, False, False, False, False
-                if "Impact:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, False, True, False, False, False, False, False, False
-                if re.match(r"^Audit:", line):
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, False, False, True, False, False, False, False, False
-                if "Remediation:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, False, False, False, True, False, False, False, False
-                if "Default Value:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, False, False, False, False, True, False, False, False
-                if "References:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, False, False, False, False, False, True, False, False
-                if "CIS Controls:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, False, False, False, False, False, False, True, False
-                if "MITRE ATT&CK Mappings:" in line:
-                    flagName, flagLevel, flagDesc, flagRation, flagImpact, flagAudit, flagRemed, flagDefval, flagRefs, flagControl, flagMetre = \
-                        False, False, False, False, False, False, False, False, False, False, True
-                if "This section is intentionally blank and exists to ensure" in line or "This section contains" in line:
-                    flagName = flagLevel = flagDesc = flagRation = flagImpact = flagAudit = flagRemed = flagDefval = flagRefs = flagControl = flagMetre = False
-                    cis_name = cis_level = cis_desc = cis_ration = cis_impact = cis_audit = cis_remed = cis_defval = cis_refs = cis_control = cis_metre = ""
-                    flagStart = False
-                    i += 1
-                    continue
-                if flagName:
-                    cis_name += line
-                if flagLevel:
-                    cis_level += line.replace('Profile Applicability: \n', '').replace('•  ', '').replace(' \n', '\n')
-                if flagDesc:
-                    cis_desc += line.replace('Description: \n', '')
-                if flagRation:
-                    cis_ration += line.replace('Rationale: \n', '')
-                if flagImpact:
-                    cis_impact += line.replace('Impact: \n', '')
-                if flagAudit:
-                    cis_audit += line.replace('Audit: \n', '')
-                if flagRemed:
-                    cis_remed += line.replace('Remediation: \n', '')
-                if flagDefval:
-                    cis_defval += line.replace('Default Value: \n', '')
-                if flagRefs:
-                    if "Additional Information" in line:
-                        flagRefs = False
-                        i += 1
-                        continue
-                    line = line.replace('References: ', '').strip()
-                    if re.match(r'^\d+\.\s', line):
-                        cis_refs += "\n" + line
-                    else:
-                        cis_refs += "" + line
-                if flagControl:
-                    cis_control += line.replace('CIS Controls: \n', '')
-                if flagMetre:
-                    cis_metre += line.replace('MITRE ATT&CK Mappings: \n', '')
-            i += 1
-    return listObj
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+def store_report_pdf(db, fs, pdf_buffer, save_id, device_id, user_id, generated_at, metadata=None):
+    file_id = fs.put(pdf_buffer, filename=f"GRC_Report_{save_id}_{device_id}.pdf")
+    report_doc = {
+        "report_id": str(uuid.uuid4()),
+        "save_id": save_id,
+        "device_id": device_id,
+        "user_id": user_id,
+        "generated_at": generated_at,
+        "file_id": file_id,
+        "metadata": metadata or {}
+    }
+    db.reports.insert_one(report_doc)
+    return report_doc
+
+def generate_and_store_grc_report(save_id, device_id, user_id, metadata=None):
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]
+    fs = gridfs.GridFS(db)
+
+    user_map = get_user_map(db)
+    device_map = get_device_map(db)
+    control_map = get_control_map(db)
+    benchmark_map = get_benchmark_map(db)
+    device, save_config, user = fetch_additional_info(db, device_id, save_id, user_id)
+
+    checklist = fetch_checklist(db, save_id, device_id)
+    generated_at = datetime.utcnow()
+
+    pdf_buffer = generate_grc_pdf(
+        checklist, user_map, device_map, control_map, benchmark_map,
+        device, save_config, user, generated_at
+    )
+
+    report_doc = store_report_pdf(
+        db, fs, pdf_buffer, save_id, device_id, user_id, generated_at, metadata
+    )
+
+    print(f"Report stored with report_id: {report_doc['report_id']}")
+
+if __name__ == "__main__":
+    # Replace with actual save_id, device_id, user_id from your DB
+    generate_and_store_grc_report(
+        save_id="uuid3",
+        device_id="uuid2",
+        user_id="uuid5",
+        metadata={"description": "Automated GRC compliance report."}
+    )

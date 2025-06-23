@@ -92,10 +92,12 @@ def check_for_updates():
         print("Updates found!")
         for k, v in updates.items():
             print(f"{k}: {local.get(k)} → {v}")
+
         log_event("UPDATE_AVAILABLE", f"Updates: {updates}")
     else:
         print("No new versions found.")
         log_event("NO_UPDATE", "No new versions found.")
+
     return updates, remote
 
 def get_output_dir():
@@ -104,6 +106,7 @@ def get_output_dir():
     output_dir = os.path.join("data", "input", dir_name)
     os.makedirs(output_dir, exist_ok=True)
     return output_dir
+
 
 def setup_driver(download_dir, headless=HEADLESS):
     options = FirefoxOptions()
@@ -244,8 +247,7 @@ def expand_accordions(driver):
         time.sleep(2)
     except Exception:
         pass
-
-def wait_for_downloads(download_dir, timeout=600):
+def wait_for_downloads(download_dir, timeout=1200):
     start = time.time()
     while True:
         if not any(f.endswith('.part') for f in os.listdir(download_dir)):
@@ -254,6 +256,118 @@ def wait_for_downloads(download_dir, timeout=600):
             print("[!] Timeout: Some downloads may be incomplete.")
             break
         time.sleep(1)
+        
+# def get_all_pdf_links(downloads_page_url, output_dir):
+#     driver = setup_driver(output_dir)
+#     driver.get(downloads_page_url)
+#     time.sleep(2)
+#     dismiss_cookie_popup(driver)
+#     expand_accordions(driver)
+#     # Wait for all "Download PDF" links to appear
+#     try:
+#         WebDriverWait(driver, 40).until(
+#             EC.presence_of_all_elements_located((By.XPATH, "//a[contains(@class, 'cta_button') and contains(text(), 'Download PDF')]"))
+#         )
+#     except Exception as e:
+#         print("[!] PDF download links did not load:", e)
+#         driver.quit()
+#         return []
+#     pdf_links = driver.find_elements(By.XPATH, "//a[contains(@class, 'cta_button') and contains(text(), 'Download PDF')]")
+#     driver.quit()
+#     print(f"[*] Found {len(pdf_links)} PDF links.")
+#     log_event("SCRAPE", f"Found {len(pdf_links)} PDF links.")
+#     return len(pdf_links)
+
+
+# def download_batch(downloads_page_url, indices, output_dir, worker_id):
+#     print(f"[Worker {worker_id}] Starting worker for indices {indices[0]} to {indices[-1]}")
+#     driver = setup_driver(output_dir)
+#     driver.get(downloads_page_url)
+#     time.sleep(2)
+#     dismiss_cookie_popup(driver)
+#     expand_accordions(driver)
+#     try:
+#         WebDriverWait(driver, 40).until(
+#             EC.presence_of_all_elements_located((By.XPATH, "//a[contains(@class, 'cta_button') and contains(text(), 'Download PDF')]"))
+#         )
+#     except Exception as e:
+#         print(f"[Worker {worker_id}] PDF links did not load: {e}")
+#         driver.quit()
+#         return 0
+#     pdf_links = driver.find_elements(By.XPATH, "//a[contains(@class, 'cta_button') and contains(text(), 'Download PDF')]")
+#     count = 0
+#     for idx in indices:
+#         if idx >= len(pdf_links):
+#             break
+#         link_elem = pdf_links[idx]
+#         try:
+#             driver.execute_script("arguments[0].scrollIntoView();", link_elem)
+#             link_elem.click()
+#             print(f"[Worker {worker_id}] Clicked PDF link {idx+1}")
+#             time.sleep(2.5)  # Adjust for your network speed
+#             count += 1
+#         except Exception as e:
+#             print(f"[Worker {worker_id}] Failed to click PDF link {idx+1}: {e}")
+#     print(f"[Worker {worker_id}] Waiting for downloads to finish...")
+#     wait_for_downloads(output_dir, timeout=600)
+#     driver.quit()
+#     print(f"[Worker {worker_id}] Completed download of {count} PDFs.")
+#     return count
+
+# # def download_all_pdfs_parallel(downloads_page_url):
+# #     output_dir = get_output_dir()
+# #     n_links = get_all_pdf_links(downloads_page_url, output_dir)
+# #     if n_links == 0:
+# #         print("[!] No PDF links found. Exiting.")
+# #         return
+
+# #     # Split indices into batches
+# #     indices = list(range(n_links))
+# #     batches = [indices[i:i+BATCH_SIZE] for i in range(0, n_links, BATCH_SIZE)]
+
+# #     print(f"[*] Downloading with {min(MAX_WORKERS, len(batches))} parallel browser workers, batch size {BATCH_SIZE}.")
+
+# #     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+# #         futures = []
+# #         for worker_id, batch_indices in enumerate(batches):
+# #             futures.append(executor.submit(download_batch, downloads_page_url, batch_indices, output_dir, worker_id))
+# #         total_downloaded = 0
+# #         for f in as_completed(futures):
+# #             total_downloaded += f.result()
+
+# #     print(f"[+] Attempted download of {total_downloaded} PDFs to {output_dir}")
+# #     log_event("DOWNLOAD", f"Attempted download of {total_downloaded} PDFs to {output_dir}")
+
+
+# def worker_task(downloads_page_url, batch_indices, output_dir, worker_id):
+#     return download_batch(downloads_page_url, batch_indices, output_dir, worker_id)
+
+# def download_all_pdfs_parallel(downloads_page_url):
+#     output_dir = get_output_dir()
+#     n_links = get_all_pdf_links(downloads_page_url, output_dir)
+#     if n_links == 0:
+#         print("[!] No PDF links found. Exiting.")
+#         return
+
+#     indices = list(range(n_links))
+#     batches = [indices[i:i+BATCH_SIZE] for i in range(0, n_links, BATCH_SIZE)]
+
+#     print(f"[*] Downloading with {min(MAX_WORKERS, len(batches))} parallel browser workers, batch size {BATCH_SIZE}.")
+
+#     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+#         futures = []
+#         for worker_id, batch_indices in enumerate(batches):
+#             futures.append(
+#                 executor.submit(worker_task, downloads_page_url, batch_indices, output_dir, worker_id)
+#             )
+#         total_downloaded = 0
+#         for f in as_completed(futures):
+#             total_downloaded += f.result()
+
+#     print(f"[+] Attempted download of {total_downloaded} PDFs to {output_dir}")
+#     log_event("DOWNLOAD", f"Attempted download of {total_downloaded} PDFs to {output_dir}")
+
+
 
 def get_all_pdf_links(downloads_page_url, output_dir):
     driver = setup_driver(output_dir)
@@ -335,6 +449,7 @@ def download_all_pdfs_parallel(downloads_page_url):
     print(f"[+] Attempted download of {total_downloaded} PDFs to {output_dir}")
     log_event("DOWNLOAD", f"Attempted download of {total_downloaded} PDFs to {output_dir}")
 
+
 def main():
     log_event("CHECK", "Checking for new CIS Benchmark versions")
     updates, remote = check_for_updates()
@@ -365,9 +480,11 @@ def main():
         log_event("UPDATED", f"Updated local_versions.json with {len(remote)} entries.")
         save_local_versions(remote)
         print("[*] All CIS PDFs downloaded to", get_output_dir())
+        sys.exit(1)
     else:
         print("No new CIS PDF versions found. You are up to date.")
         log_event("NO_UPDATE", "No new CIS PDF versions found. You are up to date.")
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()

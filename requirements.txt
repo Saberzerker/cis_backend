@@ -9,3 +9,11 @@ imapclient
 pyzmail36 
 requests
 dotenv
+tqdm
+psycopg2
+flask 
+uuid
+jsonify
+reportlab
+pymongo
+rapidfuzz
